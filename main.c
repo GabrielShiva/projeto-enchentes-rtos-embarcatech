@@ -51,7 +51,6 @@ typedef struct {
 
 // Cria a fila para os dados lidos pelo potenciômetro do joystick
 QueueHandle_t xQueueSensorData;
-QueueHandle_t xQueueOperationMode;
 
 // Realiza a inicialização dos botões
 void btn_setup(uint gpio);
@@ -73,9 +72,6 @@ void ssd1306_setup(ssd1306_t *ssd_ptr);
 
 // Implementa a tarefa do joystick
 void vSensorTask();
-
-// Implementa a tarefa que processa os dados obtidos pelo ADC (vSensorTask)
-void vProcessingTask();
 
 // Implementa a tarefa do display OLED
 void vDisplayTask();
@@ -102,13 +98,11 @@ int main() {
 
     // Criação das filas para compartilhamento de dados entre as tarefas
     xQueueSensorData = xQueueCreate(5, sizeof(sensor_data_t));
-    xQueueOperationMode = xQueueCreate(5, sizeof(bool));
 
     // Verifica se as filas foram criadas
-    if (xQueueSensorData != NULL && xQueueOperationMode != NULL) {
+    if (xQueueSensorData != NULL) {
         // Criação das tarefas
         xTaskCreate(vSensorTask, "Task: Sensores", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-        xTaskCreate(vProcessingTask, "Task: Processamento", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE * 4, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vLedMatrixTask, "Task: LEDs Matriz", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vBuzzerTask, "Task: Buzzer", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
@@ -202,23 +196,6 @@ void vSensorTask() {
     }
 }
 
-// Implementa a tarefa que processa os dados obtidos pelo ADC (vSensorTask)
-void vProcessingTask() {
-    sensor_data_t sensor_data;
-    bool is_normal_mode;
-
-    while (true) {
-        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exista executa o código abaixo
-        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
-            // Verifica se as leituras estão fora da normalidade. Se sim, deve emitir um alerta.
-            is_normal_mode = (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70) ? false : true;
-
-            xQueueSend(xQueueOperationMode, &is_normal_mode, portMAX_DELAY);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
-}
-
 // Implementa a tarefa do display OLED
 void vDisplayTask() {
     // Inicialização do protocolo I2C com 400Khz
@@ -236,6 +213,9 @@ void vDisplayTask() {
     bool color = true;
     char buffer[100];
 
+    // Realiza a limpeza do display
+    ssd1306_fill(&ssd, !color);
+
     while (true) {
         // Realiza a limpeza do display e define o layout do display OLED
         ssd1306_fill(&ssd, !color);
@@ -247,25 +227,21 @@ void vDisplayTask() {
         // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY)
         if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
             // Exibição no terminal serial
-            // printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", sensor_data.water_level, sensor_data.rain_volume);
+            printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", sensor_data.water_level, sensor_data.rain_volume);
 
-            // Monta string para OLED
-            snprintf(buffer, sizeof(buffer), "X: %u%%\nY: %u%%", sensor_data.water_level, sensor_data.rain_volume);
+            // Monta string para o display
+            snprintf(buffer, sizeof(buffer), "NIV AGUA: %u%%", sensor_data.water_level);
             ssd1306_draw_string(&ssd, buffer, 6, 28);
-        }
 
-        // Verifica se existe algum dado na fila do modo de operação do sistema. Ele espera um tempo máximo (portMAX_DELAY)
-        if (xQueueReceive(xQueueOperationMode, &is_normal_mode, portMAX_DELAY) == pdTRUE) {
-            // Exibição no terminal serial
-            if (is_normal_mode) {
-                printf("MODO NORMAL\n");
-            } else {
-                printf("MODO ALERTA\n");
-            }
+            // Monta string para o display
+            snprintf(buffer, sizeof(buffer), "VOL CHUVA: %u%%", sensor_data.rain_volume);
+            ssd1306_draw_string(&ssd, buffer, 6, 36);
         }
 
         // Envia os dados armazenados no buffer para o display OLED
         ssd1306_send_data(&ssd);
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -300,11 +276,52 @@ void vLedMatrixTask() {
 
 // Implementa a tarefa dos LEDs RGB (semaforo)
 void vLEDsRGBTask() {
-  // Iniciliza os LEDs
-  led_rgb_setup(LED_RED);
-  led_rgb_setup(LED_GREEN);
-  led_rgb_setup(LED_BLUE);
+    // Iniciliza os LEDs
+    led_rgb_setup(LED_RED);
+    led_rgb_setup(LED_GREEN);
+    led_rgb_setup(LED_BLUE);
 
-  while (true) {
-  }
+    bool is_normal_mode;
+    sensor_data_t sensor_data;
+
+    while (true) {
+        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exi
+        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+            // Caso esteja em modo de alerta, pisca o LED VERMELHO
+            if (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70) {
+                gpio_put(LED_RED, 1);
+                gpio_put(LED_GREEN, 0);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                gpio_put(LED_RED, 0);
+                gpio_put(LED_GREEN, 0);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
+            // Caso esteja em no limite do modo normal, pisca o LED AMARELO
+            if ((sensor_data.rain_volume > 70 && sensor_data.rain_volume < 80) && (sensor_data.water_level > 60 && sensor_data.water_level < 70)) {
+                gpio_put(LED_RED, 1);
+                gpio_put(LED_GREEN, 1);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                gpio_put(LED_RED, 0);
+                gpio_put(LED_GREEN, 0);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
+            // Caso esteja em no modo normal, pisca o LED VERDE
+            if (sensor_data.rain_volume < 70 && sensor_data.water_level < 60) {
+                gpio_put(LED_RED, 0);
+                gpio_put(LED_GREEN, 1);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                gpio_put(LED_RED, 0);
+                gpio_put(LED_GREEN, 0);
+                gpio_put(LED_BLUE, 0);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+    }
 }
