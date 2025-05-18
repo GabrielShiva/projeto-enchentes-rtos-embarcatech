@@ -45,12 +45,13 @@ uint slice_num   = 0;
 uint channel_num = 0;
 
 typedef struct {
-    uint16_t water_level_raw; // Eixo X (GPIO 26)
-    uint16_t rain_volume_raw; // Eixo Y (GPIO 27)
+    uint16_t water_level; // Eixo X (GPIO 26)
+    uint16_t rain_volume; // Eixo Y (GPIO 27)
 } sensor_data_t;
 
 // Cria a fila para os dados lidos pelo potenciômetro do joystick
 QueueHandle_t xQueueSensorData;
+QueueHandle_t xQueueOperationMode;
 
 // Realiza a inicialização dos botões
 void btn_setup(uint gpio);
@@ -72,6 +73,9 @@ void ssd1306_setup(ssd1306_t *ssd_ptr);
 
 // Implementa a tarefa do joystick
 void vSensorTask();
+
+// Implementa a tarefa que processa os dados obtidos pelo ADC (vSensorTask)
+void vProcessingTask();
 
 // Implementa a tarefa do display OLED
 void vDisplayTask();
@@ -98,11 +102,13 @@ int main() {
 
     // Criação das filas para compartilhamento de dados entre as tarefas
     xQueueSensorData = xQueueCreate(5, sizeof(sensor_data_t));
+    xQueueOperationMode = xQueueCreate(5, sizeof(bool));
 
     // Verifica se as filas foram criadas
-    if (xQueueSensorData != NULL) {
+    if (xQueueSensorData != NULL && xQueueOperationMode != NULL) {
         // Criação das tarefas
         xTaskCreate(vSensorTask, "Task: Sensores", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vProcessingTask, "Task: Processamento", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE * 4, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vLedMatrixTask, "Task: LEDs Matriz", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vBuzzerTask, "Task: Buzzer", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
@@ -184,15 +190,32 @@ void vSensorTask() {
     while (true) {
         // Seleciona o canal referente ao eixo X
         adc_select_input(1);
-        sensor_data.water_level_raw = adc_read();
+        sensor_data.water_level = (adc_read() * 100) / 4095;
 
         // Seleciona o canal referente ao eixo Y
         adc_select_input(0);
-        sensor_data.rain_volume_raw = adc_read();
+        sensor_data.rain_volume = (adc_read() * 100) / 4095;
 
         // Envia o valor do joystick para a fila
         xQueueSend(xQueueSensorData, &sensor_data, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+// Implementa a tarefa que processa os dados obtidos pelo ADC (vSensorTask)
+void vProcessingTask() {
+    sensor_data_t sensor_data;
+    bool is_normal_mode;
+
+    while (true) {
+        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exista executa o código abaixo
+        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+            // Verifica se as leituras estão fora da normalidade. Se sim, deve emitir um alerta.
+            is_normal_mode = (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70) ? false : true;
+
+            xQueueSend(xQueueOperationMode, &is_normal_mode, portMAX_DELAY);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
 }
 
@@ -205,8 +228,12 @@ void vDisplayTask() {
     ssd1306_t ssd;
     ssd1306_setup(&ssd);
 
-    bool color = true;
+    // Variáveis para receber os dados das filas
     sensor_data_t sensor_data;
+    bool is_normal_mode;
+
+    // Referente ao estado display
+    bool color = true;
     char buffer[100];
 
     while (true) {
@@ -217,17 +244,24 @@ void vDisplayTask() {
         ssd1306_draw_string(&ssd, "Estacao", 38, 6);
         ssd1306_draw_string(&ssd, "De Alerta", 31, 14);
 
-        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exista executa o código abaixo
+        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY)
         if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
-            uint16_t water_level_percent = (sensor_data.water_level_raw * 100) / 4095;
-            uint16_t rain_volume_percent  = (sensor_data.rain_volume_raw  * 100) / 4095;
-
-            // Exibição no console
-            printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", water_level_percent, rain_volume_percent);
+            // Exibição no terminal serial
+            // printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", sensor_data.water_level, sensor_data.rain_volume);
 
             // Monta string para OLED
-            snprintf(buffer, sizeof(buffer), "X: %u%%\nY: %u%%", water_level_percent, rain_volume_percent);
+            snprintf(buffer, sizeof(buffer), "X: %u%%\nY: %u%%", sensor_data.water_level, sensor_data.rain_volume);
             ssd1306_draw_string(&ssd, buffer, 6, 28);
+        }
+
+        // Verifica se existe algum dado na fila do modo de operação do sistema. Ele espera um tempo máximo (portMAX_DELAY)
+        if (xQueueReceive(xQueueOperationMode, &is_normal_mode, portMAX_DELAY) == pdTRUE) {
+            // Exibição no terminal serial
+            if (is_normal_mode) {
+                printf("MODO NORMAL\n");
+            } else {
+                printf("MODO ALERTA\n");
+            }
         }
 
         // Envia os dados armazenados no buffer para o display OLED
