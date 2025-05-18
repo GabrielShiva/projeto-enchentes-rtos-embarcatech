@@ -13,6 +13,8 @@
 #include "task.h"
 #include "queue.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Definição de macros para o protocolo I2C (SSD1306)
 #define I2C_PORT i2c1
@@ -28,8 +30,8 @@
 #define LED_GREEN 11
 #define LED_BLUE 12
 
-#define JOYSTICK_Y 26 // Representa o nível da água
-#define JOYSTICK_X 27 // Representa o volume da chuva
+#define JOYSTICK_Y 27 // Representa o volume da chuva
+#define JOYSTICK_X 26 // Representa o nível da água
 
 // Define variáveis para debounce dos botões A e B
 volatile uint32_t last_time_btn_press = 0;
@@ -43,8 +45,8 @@ uint slice_num   = 0;
 uint channel_num = 0;
 
 typedef struct {
-    uint16_t water_level_raw; // Eixo X (GPIO 27)
-    uint16_t rain_volume_raw; // Eixo Y (GPIO 26)
+    uint16_t water_level_raw; // Eixo X (GPIO 26)
+    uint16_t rain_volume_raw; // Eixo Y (GPIO 27)
 } sensor_data_t;
 
 // Cria a fila para os dados lidos pelo potenciômetro do joystick
@@ -101,7 +103,7 @@ int main() {
     if (xQueueSensorData != NULL) {
         // Criação das tarefas
         xTaskCreate(vSensorTask, "Task: Sensores", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-        xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE * 4, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vLedMatrixTask, "Task: LEDs Matriz", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vBuzzerTask, "Task: Buzzer", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
         xTaskCreate(vLEDsRGBTask, "Task: LEDs RGB", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
@@ -180,12 +182,12 @@ void vSensorTask() {
     sensor_data_t sensor_data;
 
     while (true) {
-        // Seleciona o canal referente ao eixo X (GPGIO 26)
-        adc_select_input(0);
+        // Seleciona o canal referente ao eixo X
+        adc_select_input(1);
         sensor_data.water_level_raw = adc_read();
 
-        // Seleciona o canal referente ao eixo Y (GPGIO 27)
-        adc_select_input(1);
+        // Seleciona o canal referente ao eixo Y
+        adc_select_input(0);
         sensor_data.rain_volume_raw = adc_read();
 
         // Envia o valor do joystick para a fila
@@ -216,12 +218,17 @@ void vDisplayTask() {
         ssd1306_draw_string(&ssd, "De Alerta", 31, 14);
 
         // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exista executa o código abaixo
-        // if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
-        //     uint16_t water_level = sensor_data.water_level_raw;
-        //     uint16_t rain_volume = sensor_data.rain_volume_raw;
+        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+            uint16_t water_level_percent = (sensor_data.water_level_raw * 100) / 4095;
+            uint16_t rain_volume_percent  = (sensor_data.rain_volume_raw  * 100) / 4095;
 
-        //     snprintf();
-        // }
+            // Exibição no console
+            printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", water_level_percent, rain_volume_percent);
+
+            // Monta string para OLED
+            snprintf(buffer, sizeof(buffer), "X: %u%%\nY: %u%%", water_level_percent, rain_volume_percent);
+            ssd1306_draw_string(&ssd, buffer, 6, 28);
+        }
 
         // Envia os dados armazenados no buffer para o display OLED
         ssd1306_send_data(&ssd);
