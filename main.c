@@ -207,7 +207,7 @@ void vDisplayTask() {
 
     // Variáveis para receber os dados das filas
     sensor_data_t sensor_data;
-    bool is_normal_mode;
+    bool is_alert_mode = true;
 
     // Referente ao estado display
     bool color = true;
@@ -229,19 +229,34 @@ void vDisplayTask() {
             // Exibição no terminal serial
             printf("NIVEL AGUA: %u%%  VOL. CHUVA: %u%%\n", sensor_data.water_level, sensor_data.rain_volume);
 
-            // Monta string para o display
-            snprintf(buffer, sizeof(buffer), "NIV AGUA: %u%%", sensor_data.water_level);
-            ssd1306_draw_string(&ssd, buffer, 6, 28);
+            // Verifica se é modo de alerta ou modo normal
+            is_alert_mode = sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70;
 
-            // Monta string para o display
-            snprintf(buffer, sizeof(buffer), "VOL CHUVA: %u%%", sensor_data.rain_volume);
-            ssd1306_draw_string(&ssd, buffer, 6, 36);
+            if (is_alert_mode) {
+                // Monta string para o display
+                snprintf(buffer, sizeof(buffer), "NIV AGUA: %u%%", sensor_data.water_level);
+                ssd1306_draw_string(&ssd, buffer, 6, 28);
+
+                // Monta string para o display
+                snprintf(buffer, sizeof(buffer), "VOL CHUVA: %u%%", sensor_data.rain_volume);
+                ssd1306_draw_string(&ssd, buffer, 6, 36);
+
+                ssd1306_draw_string(&ssd, "PROTEJA-SE!", 6, 50);
+            }
+
+            if (!is_alert_mode) {
+                // Monta string para o display
+                snprintf(buffer, sizeof(buffer), "NIV AGUA: %u%%", sensor_data.water_level);
+                ssd1306_draw_string(&ssd, buffer, 6, 28);
+
+                // Monta string para o display
+                snprintf(buffer, sizeof(buffer), "VOL CHUVA: %u%%", sensor_data.rain_volume);
+                ssd1306_draw_string(&ssd, buffer, 6, 36);
+            }
         }
 
-        // Envia os dados armazenados no buffer para o display OLED
         ssd1306_send_data(&ssd);
-
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(60));
     }
 }
 
@@ -281,28 +296,19 @@ void vLEDsRGBTask() {
     led_rgb_setup(LED_GREEN);
     led_rgb_setup(LED_BLUE);
 
-    bool is_normal_mode;
+    bool is_alert_mode = true;
     sensor_data_t sensor_data;
 
     while (true) {
         // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exi
         if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
-            // Caso esteja em modo de alerta, pisca o LED VERMELHO
-            if (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70) {
-                gpio_put(LED_RED, 1);
-                gpio_put(LED_GREEN, 0);
-                gpio_put(LED_BLUE, 0);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                gpio_put(LED_RED, 0);
-                gpio_put(LED_GREEN, 0);
-                gpio_put(LED_BLUE, 0);
-                vTaskDelay(pdMS_TO_TICKS(500));
-            }
+            // Verifica se é modo de alerta ou modo normal
+            is_alert_mode = sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70;
 
-            // Caso esteja em no limite do modo normal, pisca o LED AMARELO
-            if ((sensor_data.rain_volume > 70 && sensor_data.rain_volume < 80) && (sensor_data.water_level > 60 && sensor_data.water_level < 70)) {
+            // Caso esteja em modo de alerta, pisca o LED VERMELHO
+            if (is_alert_mode) {
                 gpio_put(LED_RED, 1);
-                gpio_put(LED_GREEN, 1);
+                gpio_put(LED_GREEN, 0);
                 gpio_put(LED_BLUE, 0);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 gpio_put(LED_RED, 0);
@@ -312,7 +318,7 @@ void vLEDsRGBTask() {
             }
 
             // Caso esteja em no modo normal, pisca o LED VERDE
-            if (sensor_data.rain_volume < 70 && sensor_data.water_level < 60) {
+            if (!is_alert_mode) {
                 gpio_put(LED_RED, 0);
                 gpio_put(LED_GREEN, 1);
                 gpio_put(LED_BLUE, 0);
