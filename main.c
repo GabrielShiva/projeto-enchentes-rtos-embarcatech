@@ -262,31 +262,110 @@ void vDisplayTask() {
 
 // Implementa a tarefa do buzzer
 void vBuzzerTask() {
-  // Configura o pino do buzzer para PWM e obtém as infos do pino
-  gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
-  slice_num   = pwm_gpio_to_slice_num(BUZZER_PIN);
-  channel_num = pwm_gpio_to_channel(BUZZER_PIN);
+    // Configura o pino do buzzer para PWM e obtém as infos do pino
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    slice_num   = pwm_gpio_to_slice_num(BUZZER_PIN);
+    channel_num = pwm_gpio_to_channel(BUZZER_PIN);
 
-  // Configuração inicial do PWM
-  pwm_config config = pwm_get_default_config();
-  pwm_init(slice_num, &config, true);
+    // Configuração inicial do PWM
+    pwm_config config = pwm_get_default_config();
+    pwm_init(slice_num, &config, true);
 
-  // Desliga PWM do pino ligado ao buzzer
-  pwm_set_enabled(slice_num, false);
+    // Desliga PWM do pino ligado ao buzzer
+    pwm_set_enabled(slice_num, false);
 
-  while (true) {
-  }
+    const uint16_t f_min = 500;   // frequência mínima (Hz)
+    const uint16_t f_max = 1200;  // frequência máxima (Hz)
+    const uint16_t step  = 10;    // incremento de frequência (Hz)
+
+    sensor_data_t sensor_data;
+
+    while (true) {
+        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY)
+        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+
+            // Verifica se é modo de alerta
+            if (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70) {
+                // Subindo a frequencia
+                for (int f = f_min; f <= f_max; f += step) {
+                    pwm_set_frequency((float)f);
+                    pwm_set_enabled(slice_num, true);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+
+                    // Verifica se o mododeixou de ser alerta
+                    xQueuePeek(xQueueSensorData, &sensor_data, 0);
+                    if (sensor_data.rain_volume < 80 && sensor_data.water_level < 70) {
+                        pwm_set_enabled(slice_num, false);
+                        break;
+                    }
+                }
+
+                // Descendo a frequencia
+                for (int f = f_max; f >= (int)f_min; f -= step) {
+                    pwm_set_frequency((float)f);
+                    pwm_set_enabled(slice_num, true);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    xQueuePeek(xQueueSensorData, &sensor_data, 0);
+                    if (sensor_data.rain_volume < 80 && sensor_data.water_level < 70) {
+                        pwm_set_enabled(slice_num, false);
+                        break;
+                    }
+                }
+            } else {
+                // Desliga o buzzer caso o modo do ssistema seja normal
+                pwm_set_enabled(slice_num, false);
+                gpio_put(BUZZER_PIN, 0);
+            }
+        }
+    }
 }
 
 // Implementa a tarefa dos LEDs
 void vLedMatrixTask() {
-  // Iniciliza a matriz de LEDs, faz a limpeza do buffer e envia para a matriz
-  npInit(LED_PIN);
-  npClear();
-  npWrite();
+    // Iniciliza a matriz de LEDs, faz a limpeza do buffer e envia para a matriz
+    npInit(LED_PIN);
+    npClear();
+    npWrite();
 
-  while (true) {
-  }
+    bool is_alert_mode = true;
+    sensor_data_t sensor_data;
+
+    npSetBrightness(255);
+
+    while(true){
+          for (uint i = 0; i < LED_COUNT; ++i) {
+            npSetLED(i, 255, 255, 255);
+        }
+    }
+    // while (true) {
+    //     // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exi
+    //     if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+    //         // Verifica se é modo de alerta ou modo normal
+    //         is_alert_mode = sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70;
+
+    //         // Caso esteja em estado de alerta, exibe simbolo de perigo vermelho
+    //         if (is_alert_mode) {
+    //             npSetLED(0, 128, 0, 0);
+    //             npSetLED(1, 128, 0, 0);
+    //             npSetLED(2, 128, 0, 0);
+    //             npSetLED(3, 128, 0, 0);
+    //             npSetLED(5, 128, 0, 0);
+    //             npSetLED(9, 128, 0, 0);
+    //             npSetLED(10, 128, 0, 0);
+    //             npSetLED(12, 128, 0, 0);
+    //             npSetLED(14, 128, 0, 0);
+    //             npSetLED(19, 128, 0, 0);
+    //             npSetLED(24, 128, 0, 0);
+
+    //             vTaskDelay(pdMS_TO_TICKS(500));
+    //             npClear();
+
+    //             vTaskDelay(pdMS_TO_TICKS(500));
+    //         }
+
+    //         npWrite();
+    //     }
+    // }
 }
 
 // Implementa a tarefa dos LEDs RGB (semaforo)
