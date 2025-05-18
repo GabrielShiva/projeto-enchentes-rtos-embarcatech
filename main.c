@@ -1,9 +1,8 @@
 #include "pico/stdlib.h"
-#include "pico/bootrom.h"
 #include "hardware/gpio.h"
+#include "hardware/adc.h"
 #include "hardware/i2c.h"
 #include "hardware/pio.h"
-#include "hardware/clocks.h"
 #include "hardware/pwm.h"
 #include "lib/ws2818b.h"
 #include "ws2818b.pio.h"
@@ -29,15 +28,12 @@
 #define LED_GREEN 11
 #define LED_BLUE 12
 
-#define JOYSTICK_Y 27
-#define JOYSTICK_X 26
+#define JOYSTICK_Y 26 // Representa o nível da água
+#define JOYSTICK_X 27 // Representa o volume da chuva
 
 // Define variáveis para debounce dos botões A e B
 volatile uint32_t last_time_btn_press = 0;
 const uint32_t debounce_delay_ms = 260;
-
-// define variável global para trocar modo de operação (NORMAL e NOTURNO)
-volatile bool is_night_mode = false;
 
 // pwm
 uint32_t clock   = 125000000;
@@ -47,14 +43,18 @@ uint slice_num   = 0;
 uint channel_num = 0;
 
 typedef struct {
-    uint16_t x_pos;
-    uint16_t y_pos;
-} joystick_data_t;
+    uint16_t water_level_raw; // Eixo X (GPIO 27)
+    uint16_t rain_volume_raw; // Eixo Y (GPIO 26)
+} sensor_data_t;
 
-QueueHandle_t xQueueJoystickSensor;
+// Cria a fila para os dados lidos pelo potenciômetro do joystick
+QueueHandle_t xQueueSensorData;
 
 // Realiza a inicialização dos botões
 void btn_setup(uint gpio);
+
+// Realiza a inicialização do ADC
+void adc_setup();
 
 // Realiza a inicialização dos LEDs RGB
 void led_rgb_setup(uint gpio);
@@ -69,7 +69,7 @@ void pwm_set_frequency(float frequency);
 void ssd1306_setup(ssd1306_t *ssd_ptr);
 
 // Implementa a tarefa do joystick
-void vJoystickTask();
+void vSensorTask();
 
 // Implementa a tarefa do display OLED
 void vDisplayTask();
@@ -87,22 +87,28 @@ int main() {
     stdio_init_all();
 
     // Inicilização dos botões
-    btn_setup(BTN_B_PIN);
-    btn_setup(BTN_A_PIN);
+    // btn_setup(BTN_B_PIN);
+    // btn_setup(BTN_A_PIN);
 
     // Inicilização das interrupções para os botões
-    gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-    gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true);
+    // gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    // gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true);
 
-    // Criação das tarefas
-    xTaskCreate(vJoystickTask, "Task: Joystick", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vLedMatrixTask, "Task: LEDs Matriz", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vBuzzerTask, "Task: Buzzer", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
-    xTaskCreate(vLEDsRGBTask, "Task: LEDs RGB", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+    // Criação das filas para compartilhamento de dados entre as tarefas
+    xQueueSensorData = xQueueCreate(5, sizeof(sensor_data_t));
 
-    // Chamda do Scheduller de tarefas
-    vTaskStartScheduler();
+    // Verifica se as filas foram criadas
+    if (xQueueSensorData != NULL) {
+        // Criação das tarefas
+        xTaskCreate(vSensorTask, "Task: Sensores", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vDisplayTask, "Task: Display", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vLedMatrixTask, "Task: LEDs Matriz", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vBuzzerTask, "Task: Buzzer", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+        xTaskCreate(vLEDsRGBTask, "Task: LEDs RGB", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
+
+        // Chamda do Scheduller de tarefas
+        vTaskStartScheduler();
+    }
     panic_unsupported();
 }
 
@@ -111,6 +117,13 @@ void btn_setup(uint gpio) {
   gpio_init(gpio);
   gpio_set_dir(gpio, GPIO_IN);
   gpio_pull_up(gpio);
+}
+
+// Realiza a inicialização do ADC
+void adc_setup() {
+    adc_gpio_init(JOYSTICK_Y);
+    adc_gpio_init(JOYSTICK_X);
+    adc_init();
 }
 
 // Realiza a inicialização dos LEDs RGB
@@ -159,32 +172,60 @@ void ssd1306_setup(ssd1306_t *ssd_ptr) {
 }
 
 // Implementa a tarefa do joystick
-void vJoystickTask() {
-    
+void vSensorTask() {
+    // Inicializa o ADC
+    adc_setup();
+
+    // Cria variável para armazenar os dados brutos coletados pelos sensores
+    sensor_data_t sensor_data;
+
+    while (true) {
+        // Seleciona o canal referente ao eixo X (GPGIO 26)
+        adc_select_input(0);
+        sensor_data.water_level_raw = adc_read();
+
+        // Seleciona o canal referente ao eixo Y (GPGIO 27)
+        adc_select_input(1);
+        sensor_data.rain_volume_raw = adc_read();
+
+        // Envia o valor do joystick para a fila
+        xQueueSend(xQueueSensorData, &sensor_data, portMAX_DELAY);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 // Implementa a tarefa do display OLED
 void vDisplayTask() {
-  // Inicialização do protocolo I2C com 400Khz
-  i2c_setup(400);
+    // Inicialização do protocolo I2C com 400Khz
+    i2c_setup(400);
 
-  // Inicializa a estrutura do display
-  ssd1306_t ssd;
-  ssd1306_setup(&ssd);
+    // Inicializa a estrutura do display
+    ssd1306_t ssd;
+    ssd1306_setup(&ssd);
 
-  bool color = true;
+    bool color = true;
+    sensor_data_t sensor_data;
+    char buffer[100];
 
-  while (true) {
-    // Realiza a limpeza do display e define o layout do display OLED
-    ssd1306_fill(&ssd, !color);
-    ssd1306_rect(&ssd, 3, 3, 122, 60, color, !color);
-    ssd1306_line(&ssd, 3, 15, 123, 15, color);
-    ssd1306_line(&ssd, 3, 27, 123, 27, color);
-    ssd1306_draw_string(&ssd, "SEMAFORO", 32, 6);
+    while (true) {
+        // Realiza a limpeza do display e define o layout do display OLED
+        ssd1306_fill(&ssd, !color);
+        ssd1306_rect(&ssd, 3, 3, 122, 60, color, !color);
+        ssd1306_line(&ssd, 3, 25, 123, 25, color);
+        ssd1306_draw_string(&ssd, "Estacao", 38, 6);
+        ssd1306_draw_string(&ssd, "De Alerta", 31, 14);
 
-    // Envia os dados armazenados no buffer para o display OLED
-    ssd1306_send_data(&ssd);
-  }
+        // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exista executa o código abaixo
+        // if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+        //     uint16_t water_level = sensor_data.water_level_raw;
+        //     uint16_t rain_volume = sensor_data.rain_volume_raw;
+
+        //     snprintf();
+        // }
+
+        // Envia os dados armazenados no buffer para o display OLED
+        ssd1306_send_data(&ssd);
+    }
 }
 
 // Implementa a tarefa do buzzer
@@ -211,9 +252,6 @@ void vLedMatrixTask() {
   npInit(LED_PIN);
   npClear();
   npWrite();
-
-  const TickType_t step = pdMS_TO_TICKS(STEP_MS);
-  const uint stepsPer = 2000 / STEP_MS;
 
   while (true) {
   }

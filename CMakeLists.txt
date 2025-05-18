@@ -43,10 +43,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(${PROJECT_NAME}
         pico_stdlib
         hardware_gpio
+        hardware_adc
         hardware_pwm
         hardware_i2c
         hardware_pio
-        hardware_clocks
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
       )
