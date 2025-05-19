@@ -30,6 +30,8 @@
 #define LED_GREEN 11
 #define LED_BLUE 12
 
+#define LED_MATRIX_PIN 7
+
 #define JOYSTICK_Y 27 // Representa o volume da chuva
 #define JOYSTICK_X 26 // Representa o nível da água
 
@@ -87,14 +89,6 @@ void vLEDsRGBTask();
 
 int main() {
     stdio_init_all();
-
-    // Inicilização dos botões
-    // btn_setup(BTN_B_PIN);
-    // btn_setup(BTN_A_PIN);
-
-    // Inicilização das interrupções para os botões
-    // gpio_set_irq_enabled_with_callback(BTN_B_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-    // gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true);
 
     // Criação das filas para compartilhamento de dados entre as tarefas
     xQueueSensorData = xQueueCreate(5, sizeof(sensor_data_t));
@@ -292,7 +286,7 @@ void vBuzzerTask() {
                     pwm_set_enabled(slice_num, true);
                     vTaskDelay(pdMS_TO_TICKS(10));
 
-                    // Verifica se o mododeixou de ser alerta
+                    // Captura os dados da fila para verificar se o modo foi alterado
                     xQueuePeek(xQueueSensorData, &sensor_data, 0);
                     if (sensor_data.rain_volume < 80 && sensor_data.water_level < 70) {
                         pwm_set_enabled(slice_num, false);
@@ -305,6 +299,8 @@ void vBuzzerTask() {
                     pwm_set_frequency((float)f);
                     pwm_set_enabled(slice_num, true);
                     vTaskDelay(pdMS_TO_TICKS(10));
+
+                    // Captura os dados da fila para verificar se o modo foi alterado
                     xQueuePeek(xQueueSensorData, &sensor_data, 0);
                     if (sensor_data.rain_volume < 80 && sensor_data.water_level < 70) {
                         pwm_set_enabled(slice_num, false);
@@ -323,49 +319,56 @@ void vBuzzerTask() {
 // Implementa a tarefa dos LEDs
 void vLedMatrixTask() {
     // Iniciliza a matriz de LEDs, faz a limpeza do buffer e envia para a matriz
-    npInit(LED_PIN);
-    npClear();
-    npWrite();
-
-    bool is_alert_mode = true;
-    sensor_data_t sensor_data;
-
+    npInit(LED_MATRIX_PIN);
     npSetBrightness(255);
 
-    while(true){
-          for (uint i = 0; i < LED_COUNT; ++i) {
-            npSetLED(i, 255, 255, 255);
+    sensor_data_t sensor_data;
+
+    // Define os frames da animação da matriz de LEDs
+    const uint8_t frame1[] = {13};
+    const uint8_t frame2[] = {6, 7, 8, 11, 13, 16, 17, 18};
+    const uint8_t frame3[] = {0, 1, 2, 3, 4, 5, 9, 10, 14, 15, 19, 20, 21, 22, 23, 24};
+    const uint8_t *frames[] = {frame1, frame2, frame3};
+    const size_t frames_sizes[] = {1, 8, 16};
+
+    while (true) {
+        // Aguarda dados e decide modo
+        if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
+            bool is_alert_mode = (sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70);
+
+            // Limpa a matiz de LEDs
+            npClear();
+            npWrite();
+
+            // Se for o modo de alerta
+            if (is_alert_mode) {
+                // Entra em um frame
+                for (int i = 0; i < 3; i++) {
+                    npClear();
+
+                    // Liga cada um dos LEDs do frame selecionado
+                    for(size_t j = 0; j < frames_sizes[i]; j++) {
+                        npSetLED(frames[i][j], 255, 0, 0);
+                    }
+                    npWrite();
+                    vTaskDelay(pdMS_TO_TICKS(500));
+
+                    // Verifica se saiu do modo alerta
+                    xQueuePeek(xQueueSensorData, &sensor_data, 0);
+                    if (sensor_data.rain_volume < 80 && sensor_data.water_level < 70) {
+                        npClear();
+                        npWrite();
+                        break;
+                    }
+                }
+            } else {
+                // Entra no modo normal
+                npClear();
+                npWrite();
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
         }
     }
-    // while (true) {
-    //     // Verifica se existe algum dado na fila dos sensores. Ele espera um tempo máximo (portMAX_DELAY). Caso exi
-    //     if (xQueueReceive(xQueueSensorData, &sensor_data, portMAX_DELAY) == pdTRUE) {
-    //         // Verifica se é modo de alerta ou modo normal
-    //         is_alert_mode = sensor_data.rain_volume >= 80 || sensor_data.water_level >= 70;
-
-    //         // Caso esteja em estado de alerta, exibe simbolo de perigo vermelho
-    //         if (is_alert_mode) {
-    //             npSetLED(0, 128, 0, 0);
-    //             npSetLED(1, 128, 0, 0);
-    //             npSetLED(2, 128, 0, 0);
-    //             npSetLED(3, 128, 0, 0);
-    //             npSetLED(5, 128, 0, 0);
-    //             npSetLED(9, 128, 0, 0);
-    //             npSetLED(10, 128, 0, 0);
-    //             npSetLED(12, 128, 0, 0);
-    //             npSetLED(14, 128, 0, 0);
-    //             npSetLED(19, 128, 0, 0);
-    //             npSetLED(24, 128, 0, 0);
-
-    //             vTaskDelay(pdMS_TO_TICKS(500));
-    //             npClear();
-
-    //             vTaskDelay(pdMS_TO_TICKS(500));
-    //         }
-
-    //         npWrite();
-    //     }
-    // }
 }
 
 // Implementa a tarefa dos LEDs RGB (semaforo)
